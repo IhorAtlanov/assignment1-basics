@@ -261,7 +261,7 @@ def run_train_bpe(input_path: str, vocab_size: int, special_tokens: List[str],
         iteration += 1
 
     if verbose:
-        print(f"\nТренування завершено!")
+        print("\nТренування завершено!")
         print(f"Фінальний розмір vocab: {len(vocab)}")
         print(f"Кількість merges: {len(merges)}")
 
@@ -271,7 +271,7 @@ def run_train_bpe(input_path: str, vocab_size: int, special_tokens: List[str],
 # Приклад використання
 if __name__ == "__main__":
     start_time = time.time()
-    data = "/mnt/c/Users/Ihor/Desktop/Stanford_LLM/assignment1-basics/data/TinyStoriesV2-GPT4-train.txt"
+    data = "/mnt/d/Stanford_LLM/assignment1-basics/data/owt_valid.txt"
     run_train_bpe(input_path=data, vocab_size=10000, special_tokens=["<|endoftext|>"], verbose=True)
     end_time = time.time()
     print(f"TIME_SPEND = {end_time-start_time}")

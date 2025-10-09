@@ -390,7 +390,7 @@ if __name__ == "__main__":
     start_time = time.time()
     
     # Example with small vocab size for testing
-    data = "/mnt/d/Stanford_LLM/assignment1-basics/data/TinyStoriesV2-GPT4-valid.txt"
+    data = "/mnt/d/Stanford_LLM/assignment1-basics/data/owt_train.txt"
     vocab, merges = run_train_bpe(
         input_path=data, 
         vocab_size=500, 

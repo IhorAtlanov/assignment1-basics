@@ -2,7 +2,7 @@ import regex as re  # Використовуємо regex замість re дл�
 from collections import Counter, defaultdict
 from typing import List, Tuple, Dict, Set, Iterable
 from multiprocessing import Pool, cpu_count
-from BPE_v3 import _pretokenize_chunk
+from cs336_basics.BPE.BPE_v3 import _pretokenize_chunk
 
 # Шаблон для pre-tokenization regex
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""

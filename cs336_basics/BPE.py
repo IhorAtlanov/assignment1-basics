@@ -1,3 +1,4 @@
+import os
 import regex as re
 from collections import Counter, defaultdict
 from typing import List, Tuple, Dict, Set, Optional
@@ -5,12 +6,11 @@ from multiprocessing import Pool, cpu_count
 import time
 import pickle
 from tqdm import tqdm
-import os
 
-# Pattern for pre-tokenization (same as before)
+# Pattern for pre-tokenization
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
-# Helper for multiprocessing.Pool.map (same as before)
+
 def _pretokenize_chunk(args):
     """Helper for multiprocessing.Pool.map (must be top-level)."""
     chunk, special_tokens_set = args
@@ -23,7 +23,7 @@ def _pretokenize_chunk(args):
             out_tokens.extend(tokens)
     return out_tokens
 
-# Parallel pre-tokenization (same as before)
+
 def parallel_pretokenize(parts: List[str], special_tokens: List[str], workers: Optional[int] = None) -> List[str]:
     """
     Pre-tokenize a list of 'parts' in parallel.
@@ -31,25 +31,33 @@ def parallel_pretokenize(parts: List[str], special_tokens: List[str], workers: O
     """
     if workers is None:
         workers = max(1, cpu_count() - 1)
-    if not parts:
+
+    if len(parts) == 0:
         return []
+
+    # Sequential processing for small inputs
     if workers <= 1 or len(parts) < workers * 2:
-        sset = set(special_tokens)
         result = []
+        sset = set(special_tokens)
         for part in parts:
             if part in sset:
                 result.append(part)
             elif part:
                 result.extend(re.findall(PAT, part))
         return result
+
+    # Create chunks
     chunk_size = max(1, (len(parts) + workers - 1) // workers)
     chunks = [parts[i:i + chunk_size] for i in range(0, len(parts), chunk_size)]
+
     args_list = [(chunk, set(special_tokens)) for chunk in chunks]
+
     with Pool(processes=min(workers, len(chunks))) as pool:
         results = pool.map(_pretokenize_chunk, args_list)
+
+    # Flatten results
     return [token for result in results for token in result]
 
-# --- MODIFIED AND NEW FUNCTIONS FOR STREAMING ---
 
 def get_word_freqs(input_path: str, special_tokens: List[str], workers: Optional[int], chunk_size_mb: int = 10) -> Counter:
     """
@@ -124,7 +132,7 @@ def merge_pair(tokens: Tuple[bytes, ...], pair: Tuple[bytes, bytes], new_token: 
     return tuple(new_tokens)
 
 
-def run_train_bpe_stream(
+def run_train_bpe(
     input_path: str,
     vocab_size: int,
     special_tokens: Optional[List[str]] = None,
@@ -224,120 +232,27 @@ def run_train_bpe_stream(
 
     return vocab, merges
 
-# --- UNCHANGED ENCODE/DECODE/LOAD FUNCTIONS ---
+
 def load_bpe(load_path: str) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]], List[str]]:
     """Load saved BPE model."""
     with open(load_path, 'rb') as f:
         data = pickle.load(f)
     return data['vocab'], data['merges'], data['special_tokens']
 
-def encode(text: str, merges: List[Tuple[bytes, bytes]], special_tokens: Optional[List[str]] = None) -> List[int]:
-    """
-    Encode text using trained BPE merges.
-    Returns list of token IDs.
-    """
-    if special_tokens is None:
-        special_tokens = []
-    
-    # Build merge priority dict
-    merge_priority = {pair: i for i, pair in enumerate(merges)}
-    
-    # Split on special tokens
-    if special_tokens:
-        pattern = "|".join(re.escape(st) for st in special_tokens)
-        parts = re.split(f"({pattern})", text)
-    else:
-        parts = [text]
-    
-    # Pre-tokenize
-    special_set = set(special_tokens)
-    pre_tokens = []
-    for part in parts:
-        if part in special_set:
-            pre_tokens.append(part)
-        elif part:
-            pre_tokens.extend(re.findall(PAT, part))
-    
-    # Apply merges to each pre-token
-    result = []
-    # Create a reverse vocab for merged tokens to find their IDs
-    merged_token_to_id = {}
-    base_id = 256 + len(special_tokens)
-    for i, (a,b) in enumerate(merges):
-        merged_token_to_id[a+b] = base_id + i
-
-    for pre_token in pre_tokens:
-        if pre_token in special_set:
-            result.append(256 + special_tokens.index(pre_token))
-            continue
-        
-        tokens = [bytes([b]) for b in pre_token.encode("utf-8")]
-        
-        while len(tokens) > 1:
-            best_pair_info = min(
-                ((i, merge_priority.get((tokens[i], tokens[i+1]), float('inf'))) for i in range(len(tokens) - 1)),
-                key=lambda x: x[1]
-            )
-            idx, priority = best_pair_info
-            if priority == float('inf'):
-                break
-            
-            pair = (tokens[idx], tokens[idx+1])
-            tokens = tokens[:idx] + [pair[0] + pair[1]] + tokens[idx+2:]
-        
-        for token in tokens:
-            if len(token) == 1:
-                result.append(token[0])
-            else:
-                result.append(merged_token_to_id[token])
-    
-    return result
-
-
-def decode(token_ids: List[int], vocab: Dict[int, bytes]) -> str:
-    """
-    Decode token IDs back to text using the vocabulary.
-    """
-    byte_sequences = [vocab.get(token_id, b'') for token_id in token_ids]
-    all_bytes = b''.join(byte_sequences)
-    return all_bytes.decode("utf-8", errors="replace")
-
-
 # Example usage
 if __name__ == "__main__":
     start_time = time.time()
     
     # Example with small vocab size for testing
-    # Create a dummy large file for demonstration if it doesn't exist
-    data_path = "/mnt/d/Stanford_LLM/assignment1-basics/data/owt_train.txt"
-    if not os.path.exists(data_path):
-        print(f"Creating a dummy data file '{data_path}' for demonstration...")
-        with open(data_path, "w", encoding="utf-8") as f:
-            for _ in range(50000):
-                f.write("This is a sample sentence for the BPE tokenizer. We repeat it many times to simulate a large dataset.\n")
-                f.write("The quick brown fox jumps over the lazy dog. Special tokens like <|endoftext|> should be handled correctly.\n")
-
-    # Use the new streaming function
-    vocab, merges = run_train_bpe_stream(
-        input_path=data_path, 
+    data = "/mnt/d/Stanford_LLM/assignment1-basics/data/owt_valid.txt"
+    vocab, merges = run_train_bpe(
+        input_path=data, 
         vocab_size=500, 
         special_tokens=["<|endoftext|>"], 
         verbose=True,
         workers=None,  # Auto-detect
-        save_path="bpe_model_streamed.pkl"
+        save_path="bpe_model.pkl"
     )
     
     end_time = time.time()
-    print(f"\nTotal time: {end_time - start_time:.2f}s")     
-    
-    # --- Testing encode/decode ---
-    vocab, merges, special_tokens = load_bpe("bpe_model_streamed.pkl")
-
-    test_text = "One day, a little boy named Tim went to the park. He saw a big tiger. The tiger was not mean, but very easy to play with. Tim and the tiger played all day. They had lots of fun. Then, something unexpected happened."
-    token_ids = encode(test_text, merges, special_tokens=special_tokens)
-    print(f"\nEncoded '{test_text}' to {len(token_ids)} tokens")
-    print(f"Token IDs: {token_ids}")
-    
-    decoded_text = decode(token_ids, vocab)
-    print(f"Decoded text: {decoded_text}")
-    print(f"Texts match: {test_text == decoded_text}")
+    print(f"\nTotal time: {end_time - start_time:.2f}s")                                                                      

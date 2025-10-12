@@ -12,8 +12,7 @@ Dependencies:
 
 import regex as re
 import pickle
-from typing import List, Dict, Tuple, Optional, Iterable, Iterator
-
+from collections.abc import Iterable, Iterator
 
 class Tokenizer:
     """
@@ -43,9 +42,9 @@ class Tokenizer:
     
     def __init__(
         self, 
-        vocab: Dict[int, bytes], 
-        merges: List[Tuple[bytes, bytes]], 
-        special_tokens: Optional[List[str]] = None
+        vocab: dict[int, bytes], 
+        merges: list[tuple[bytes, bytes]], 
+        special_tokens: list[str] | None = None
     ):
         """
         Construct a tokenizer from a given vocabulary, list of merges, and special tokens.
@@ -85,7 +84,7 @@ class Tokenizer:
         cls, 
         vocab_filepath: str, 
         merges_filepath: str, 
-        special_tokens: Optional[List[str]] = None
+        special_tokens: list[str] | None = None
     ) -> 'Tokenizer':
         """
         Class method to construct a Tokenizer from serialized vocabulary and merges files.
@@ -113,7 +112,7 @@ class Tokenizer:
         
         return cls(vocab, merges, special_tokens)
     
-    def encode(self, text: str) -> List[int]:
+    def encode(self, text: str) -> list[int]:
         """
         Encode input text into a sequence of token IDs.
         
@@ -203,10 +202,9 @@ class Tokenizer:
         """
         for line in iterable:
             token_ids = self.encode(line)
-            for token_id in token_ids:
-                yield token_id
+            yield from token_ids
     
-    def decode(self, ids: List[int]) -> str:
+    def decode(self, ids: list[int]) -> str:
         """
         Decode a sequence of token IDs back into text.
         
@@ -266,7 +264,10 @@ if __name__ == "__main__":
         )
         print(tokenizer)
         
-        test_text = "One day, a little boy named Tim went to the park."
+        data_path = "/mnt/d/Stanford_LLM/assignment1-basics/data/TinyStoriesV2-GPT4-valid.txt"
+        with open(data_path, "r", encoding="utf-8") as f:
+            test_text = f.read()
+            
         encoded = tokenizer.encode(test_text)
         print(f"\nEncoded: '{test_text}'")
         print(f"Token IDs: {encoded}")

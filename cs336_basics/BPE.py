@@ -1,7 +1,6 @@
 import os
 import regex as re
-from collections import Counter, defaultdict
-from typing import List, Tuple, Dict, Set, Optional
+from collections import Counter
 from multiprocessing import Pool, cpu_count
 import time
 import pickle
@@ -9,7 +8,6 @@ from tqdm import tqdm
 
 # Pattern for pre-tokenization
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-
 
 def _pretokenize_chunk(args):
     """Helper for multiprocessing.Pool.map (must be top-level)."""
@@ -24,7 +22,7 @@ def _pretokenize_chunk(args):
     return out_tokens
 
 
-def parallel_pretokenize(parts: List[str], special_tokens: List[str], workers: Optional[int] = None) -> List[str]:
+def parallel_pretokenize(parts: list[str], special_tokens: list[str], workers: int | None = None) -> list[str]:
     """
     Pre-tokenize a list of 'parts' in parallel.
     Special tokens are preserved (not tokenized).
@@ -59,7 +57,7 @@ def parallel_pretokenize(parts: List[str], special_tokens: List[str], workers: O
     return [token for result in results for token in result]
 
 
-def get_word_freqs(input_path: str, special_tokens: List[str], workers: Optional[int], chunk_size_mb: int = 10) -> Counter:
+def get_word_freqs(input_path: str, special_tokens: list[str], workers: int | None, chunk_size_mb: int = 30) -> Counter:
     """
     Reads a large file in chunks, pre-tokenizes, and returns word frequency counts.
     This is the first pass over the data.
@@ -69,7 +67,7 @@ def get_word_freqs(input_path: str, special_tokens: List[str], workers: Optional
     
     file_size = os.path.getsize(input_path)
     
-    with open(input_path, "r", encoding="utf-8") as f, tqdm(total=file_size, unit='B', unit_scale=True, desc="1/2: Counting word frequencies") as pbar:
+    with open(input_path, encoding="utf-8") as f, tqdm(total=file_size, unit='B', unit_scale=True, desc="1/2: Counting word frequencies") as pbar:
         while True:
             chunk = f.readlines(chunk_size_mb * 1024 * 1024)
             if not chunk:
@@ -99,7 +97,7 @@ def get_word_freqs(input_path: str, special_tokens: List[str], workers: Optional
             
     return word_freqs
 
-def get_initial_pair_freqs(word_freqs: Counter) -> Tuple[Dict[Tuple[bytes, ...], int], Counter]:
+def get_initial_pair_freqs(word_freqs: Counter) -> tuple[dict[tuple[bytes, ...], int], Counter]:
     """
     Calculates initial pair frequencies from word frequency counts.
     The 'corpus' is now a dictionary mapping tokenized words to their frequency.
@@ -116,7 +114,7 @@ def get_initial_pair_freqs(word_freqs: Counter) -> Tuple[Dict[Tuple[bytes, ...],
             
     return corpus, pair_freqs
 
-def merge_pair(tokens: Tuple[bytes, ...], pair: Tuple[bytes, bytes], new_token: bytes) -> Tuple[bytes, ...]:
+def merge_pair(tokens: tuple[bytes, ...], pair: tuple[bytes, bytes], new_token: bytes) -> tuple[bytes, ...]:
     """
     Helper to merge a pair within a single tokenized word (represented as a tuple).
     """
@@ -135,35 +133,39 @@ def merge_pair(tokens: Tuple[bytes, ...], pair: Tuple[bytes, bytes], new_token: 
 def run_train_bpe(
     input_path: str,
     vocab_size: int,
-    special_tokens: Optional[List[str]] = None,
+    special_tokens: list[str] | None = None,
     min_frequency: int = 2,
     verbose: bool = False,
-    workers: Optional[int] = None,
-    save_path: Optional[str] = None,
+    workers: int | None = None,
+    save_path: str | None = None,
     chunk_size_mb: int = 10
-) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]]]:
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """
     Train BPE tokenizer efficiently on large files by streaming.
     """
-    if special_tokens is None: special_tokens = []
+    if special_tokens is None: 
+        special_tokens = []
     
     # 1. First pass: Get word frequencies by reading file in chunks
-    if verbose: print("Starting Pass 1: Reading file and counting word frequencies...")
+    if verbose: 
+        print("Starting Pass 1: Reading file and counting word frequencies...")
     word_freqs = get_word_freqs(input_path, special_tokens, workers, chunk_size_mb)
-    if verbose: print(f"✓ Pass 1 complete. Found {len(word_freqs)} unique words.")
+    if verbose: 
+        print(f"✓ Pass 1 complete. Found {len(word_freqs)} unique words.")
 
     # 2. Initialize our vocabulary representation and initial pair frequencies
-    if verbose: print("Building initial vocabulary and pair frequencies...")
+    if verbose: 
+        print("Building initial vocabulary and pair frequencies...")
     corpus, pair_freqs = get_initial_pair_freqs(word_freqs)
 
     # 3. Initialize vocabulary with base tokens and special tokens
-    vocab: Dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+    vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
     current_id = 256
     for st in special_tokens:
         vocab[current_id] = st.encode("utf-8")
         current_id += 1
 
-    merges: List[Tuple[bytes, bytes]] = []
+    merges: list[tuple[bytes, bytes]] = []
 
     # 4. Main BPE merge loop
     if verbose:
@@ -181,7 +183,8 @@ def run_train_bpe(
             break # No pairs left
 
         if best_freq < min_frequency:
-            if verbose: print(f"Best pair frequency {best_freq} < {min_frequency}. Stopping.")
+            if verbose: 
+                print(f"Best pair frequency {best_freq} < {min_frequency}. Stopping.")
             break
 
         # Add the new merged token to our vocabulary
@@ -205,7 +208,8 @@ def run_train_bpe(
                 # Decrement counts for old pairs that were destroyed by the merge
                 for i in range(len(word_tokens) - 1):
                     pair = (word_tokens[i], word_tokens[i+1])
-                    if pair_freqs.get(pair): pair_freqs[pair] -= freq
+                    if pair_freqs.get(pair): 
+                        pair_freqs[pair] -= freq
                 
                 # Increment counts for new pairs created by the merge
                 for i in range(len(merged_word_tokens) - 1):
@@ -233,7 +237,7 @@ def run_train_bpe(
     return vocab, merges
 
 
-def load_bpe(load_path: str) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]], List[str]]:
+def load_bpe(load_path: str) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]], list[str]]:
     """Load saved BPE model."""
     with open(load_path, 'rb') as f:
         data = pickle.load(f)
@@ -244,14 +248,14 @@ if __name__ == "__main__":
     start_time = time.time()
     
     # Example with small vocab size for testing
-    data = "/mnt/d/Stanford_LLM/assignment1-basics/data/owt_valid.txt"
+    data = "/mnt/d/Stanford_LLM/assignment1-basics/data/owt_train.txt"
     vocab, merges = run_train_bpe(
         input_path=data, 
-        vocab_size=500, 
+        vocab_size=10000, 
         special_tokens=["<|endoftext|>"], 
         verbose=True,
         workers=None,  # Auto-detect
-        save_path="bpe_model.pkl"
+        save_path="bpe_model_owt_train.pkl"
     )
     
     end_time = time.time()

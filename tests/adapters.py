@@ -28,8 +28,15 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-
-    raise NotImplementedError
+    from cs336_basics.liner import Liner
+    model = Liner(d_in, d_out, device=weights.device, dtype=weights.dtype)
+    
+    # Load weights - need to transpose since weights are (d_out, d_in) 
+    # but Liner stores W as (d_in, d_out)
+    model.load_state_dict({'W': weights.T})
+    
+    # Run forward pass
+    return model.forward(in_features)
 
 
 def run_embedding(
@@ -51,7 +58,22 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    raise NotImplementedError
+    from cs336_basics.embedding import Embedding
+    
+    # Create an embedding layer with the specified dimensions
+    embedding = Embedding(
+        num_embeddings=vocab_size,
+        embedding_dim=d_model,
+        device=weights.device,
+        dtype=weights.dtype
+    )
+    
+    # Load the provided weights into the embedding layer
+    with torch.no_grad():
+        embedding.weight.copy_(weights)
+    
+    # Perform the embedding lookup
+    return embedding(token_ids)
 
 
 def run_swiglu(

@@ -98,14 +98,20 @@ def run_swiglu(
     Returns:
         Float[Tensor, "... d_model"]: Output embeddings of the same shape as the input embeddings.
     """
-    # Example:
-    # If your state dict keys match, you can use `load_state_dict()`
-    # swiglu.load_state_dict(weights)
-    # You can also manually assign the weights
-    # swiglu.w1.weight.data = w1_weight
-    # swiglu.w2.weight.data = w2_weight
-    # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    import torch.nn.functional as F
+    x_w1 = F.linear(in_features, w1_weight)  # Shape: (..., d_ff)
+    silu_output = run_silu(x_w1)  # Shape: (..., d_ff)
+    
+    # Step 2: Project input through W3 for gating
+    x_w3 = F.linear(in_features, w3_weight)  # Shape: (..., d_ff)
+    
+    # Step 3: Apply gating (element-wise multiplication)
+    gated = silu_output * x_w3  # Shape: (..., d_ff)
+    
+    # Step 4: Project back to d_model through W2
+    output = F.linear(gated, w2_weight)  # Shape: (..., d_model)
+    
+    return output
 
 
 def run_scaled_dot_product_attention(
@@ -222,7 +228,44 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    # basic checks
+    if d_k % 2 != 0:
+        raise ValueError("d_k must be even for RoPE (pairs of dims).")
+    if in_query_or_key.shape[-1] != d_k:
+        raise ValueError(f"Last dim of input ({in_query_or_key.shape[-1]}) must equal d_k ({d_k}).")
+
+    device = in_query_or_key.device
+    dtype = in_query_or_key.dtype
+
+    # prepare frequency terms: indices 0,2,4,... -> we use d_k/2 frequencies
+    indices = torch.arange(0, d_k, 2, dtype=torch.float32, device=device)  # shape (d_k/2,)
+    freqs = 1.0 / (theta ** (indices / d_k))  # shape (d_k/2,)
+
+    # ensure token_positions is float on same device, shape (..., seq_len)
+    pos = token_positions.to(device=device)
+    pos = pos.to(torch.float32)
+
+    # Broadcast pos[..., seq_len, 1] * freqs[1] -> (..., seq_len, d_k/2)
+    # If token_positions was (seq_len,), broadcasting will work automatically.
+    freqs_pos = pos.unsqueeze(-1) * freqs.view(*([1] * (pos.dim() - 1)), -1)  # shape (..., seq_len, d_k/2)
+
+    cos = torch.cos(freqs_pos).to(dtype=dtype)
+    sin = torch.sin(freqs_pos).to(dtype=dtype)
+
+    # split input into even/odd dims
+    x_even = in_query_or_key[..., 0::2]  # (..., seq_len, d_k/2)
+    x_odd  = in_query_or_key[..., 1::2]  # (..., seq_len, d_k/2)
+
+    # apply rotation:
+    x_even_rotated = x_even * cos - x_odd * sin
+    x_odd_rotated  = x_even * sin + x_odd * cos
+
+    # interleave back to (..., seq_len, d_k)
+    out = torch.empty_like(in_query_or_key)
+    out[..., 0::2] = x_even_rotated
+    out[..., 1::2] = x_odd_rotated
+
+    return out
 
 
 def run_transformer_block(
@@ -400,7 +443,12 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    original_dtype = in_features.dtype
+    x = in_features.float()
+    rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + eps)
+    x_norm = x / rms
+    x_norm = x_norm.to(original_dtype)
+    return x_norm * weights
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -414,7 +462,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return in_features * torch.sigmoid(in_features)
 
 
 def run_get_batch(

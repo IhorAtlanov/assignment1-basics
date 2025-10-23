@@ -138,7 +138,7 @@ def run_train_bpe(
     verbose: bool = False,
     workers: int | None = None,
     save_path: str | None = None,
-    chunk_size_mb: int = 10
+    chunk_size_mb: int = 50
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """
     Train BPE tokenizer efficiently on large files by streaming.

@@ -1,16 +1,20 @@
+import os
 import regex as re
-from collections import Counter, defaultdict
-from typing import List, Tuple, Dict, Set, Optional
+from collections import Counter
 from multiprocessing import Pool, cpu_count
 import time
 import pickle
 from tqdm import tqdm
-import os
+import json
+import base64
 
-# Pattern for pre-tokenization (same as before)
+# Pattern for pre-tokenization
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
-# Helper for multiprocessing.Pool.map (same as before)
+def _b64(b: bytes) -> str:
+    """Encode bytes -> base64 ascii (safe for JSON)."""
+    return base64.b64encode(b).decode("ascii")
+
 def _pretokenize_chunk(args):
     """Helper for multiprocessing.Pool.map (must be top-level)."""
     chunk, special_tokens_set = args
@@ -23,35 +27,60 @@ def _pretokenize_chunk(args):
             out_tokens.extend(tokens)
     return out_tokens
 
-# Parallel pre-tokenization (same as before)
-def parallel_pretokenize(parts: List[str], special_tokens: List[str], workers: Optional[int] = None) -> List[str]:
+
+def _readable(b: bytes) -> str:
+    """
+    Спробувати перетворити bytes -> зрозумілий текст.
+    - Якщо utf-8 декодується і містить лише звичайні друковані символи, повертаємо строку.
+    - Інакше повертаємо hex-представлення з префіксом 'hex:'.
+    """
+    try:
+        s = b.decode('utf-8')
+    except Exception:
+        return "hex:" + b.hex()
+
+    # Якщо є контрольні (не-друковані) символи — повертаємо hex
+    if any(ord(ch) < 32 and ch not in "\n\r\t" for ch in s):
+        return "hex:" + b.hex()
+    return s
+
+
+def parallel_pretokenize(parts: list[str], special_tokens: list[str], workers: int | None = None) -> list[str]:
     """
     Pre-tokenize a list of 'parts' in parallel.
     Special tokens are preserved (not tokenized).
     """
     if workers is None:
         workers = max(1, cpu_count() - 1)
-    if not parts:
+
+    if len(parts) == 0:
         return []
+
+    # Sequential processing for small inputs
     if workers <= 1 or len(parts) < workers * 2:
-        sset = set(special_tokens)
         result = []
+        sset = set(special_tokens)
         for part in parts:
             if part in sset:
                 result.append(part)
             elif part:
                 result.extend(re.findall(PAT, part))
         return result
+
+    # Create chunks
     chunk_size = max(1, (len(parts) + workers - 1) // workers)
     chunks = [parts[i:i + chunk_size] for i in range(0, len(parts), chunk_size)]
+
     args_list = [(chunk, set(special_tokens)) for chunk in chunks]
+
     with Pool(processes=min(workers, len(chunks))) as pool:
         results = pool.map(_pretokenize_chunk, args_list)
+
+    # Flatten results
     return [token for result in results for token in result]
 
-# --- MODIFIED AND NEW FUNCTIONS FOR STREAMING ---
 
-def get_word_freqs(input_path: str, special_tokens: List[str], workers: Optional[int], chunk_size_mb: int = 10) -> Counter:
+def get_word_freqs(input_path: str, special_tokens: list[str], workers: int | None, chunk_size_mb: int = 30) -> Counter:
     """
     Reads a large file in chunks, pre-tokenizes, and returns word frequency counts.
     This is the first pass over the data.
@@ -61,7 +90,7 @@ def get_word_freqs(input_path: str, special_tokens: List[str], workers: Optional
     
     file_size = os.path.getsize(input_path)
     
-    with open(input_path, "r", encoding="utf-8") as f, tqdm(total=file_size, unit='B', unit_scale=True, desc="1/2: Counting word frequencies") as pbar:
+    with open(input_path, encoding="utf-8") as f, tqdm(total=file_size, unit='B', unit_scale=True, desc="1/2: Counting word frequencies") as pbar:
         while True:
             chunk = f.readlines(chunk_size_mb * 1024 * 1024)
             if not chunk:
@@ -91,7 +120,7 @@ def get_word_freqs(input_path: str, special_tokens: List[str], workers: Optional
             
     return word_freqs
 
-def get_initial_pair_freqs(word_freqs: Counter) -> Tuple[Dict[Tuple[bytes, ...], int], Counter]:
+def get_initial_pair_freqs(word_freqs: Counter) -> tuple[dict[tuple[bytes, ...], int], Counter]:
     """
     Calculates initial pair frequencies from word frequency counts.
     The 'corpus' is now a dictionary mapping tokenized words to their frequency.
@@ -108,7 +137,7 @@ def get_initial_pair_freqs(word_freqs: Counter) -> Tuple[Dict[Tuple[bytes, ...],
             
     return corpus, pair_freqs
 
-def merge_pair(tokens: Tuple[bytes, ...], pair: Tuple[bytes, bytes], new_token: bytes) -> Tuple[bytes, ...]:
+def merge_pair(tokens: tuple[bytes, ...], pair: tuple[bytes, bytes], new_token: bytes) -> tuple[bytes, ...]:
     """
     Helper to merge a pair within a single tokenized word (represented as a tuple).
     """
@@ -124,90 +153,108 @@ def merge_pair(tokens: Tuple[bytes, ...], pair: Tuple[bytes, bytes], new_token: 
     return tuple(new_tokens)
 
 
-def run_train_bpe_stream(
+# Замініть/оновіть run_train_bpe: (показаний повністю, щоб було просто скопіювати)
+def run_train_bpe(
     input_path: str,
     vocab_size: int,
-    special_tokens: Optional[List[str]] = None,
+    special_tokens: list[str] | None = None,
     min_frequency: int = 2,
     verbose: bool = False,
-    workers: Optional[int] = None,
-    save_path: Optional[str] = None,
+    workers: int | None = None,
+    save_path: str | None = None,
     chunk_size_mb: int = 10
-) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]]]:
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """
     Train BPE tokenizer efficiently on large files by streaming.
+    Saves pickle and also a JSON sidecar with full iteration history + merges.
     """
-    if special_tokens is None: special_tokens = []
-    
+    if special_tokens is None:
+        special_tokens = []
+
     # 1. First pass: Get word frequencies by reading file in chunks
-    if verbose: print("Starting Pass 1: Reading file and counting word frequencies...")
+    if verbose:
+        print("Starting Pass 1: Reading file and counting word frequencies...")
     word_freqs = get_word_freqs(input_path, special_tokens, workers, chunk_size_mb)
-    if verbose: print(f"✓ Pass 1 complete. Found {len(word_freqs)} unique words.")
+    if verbose:
+        print(f"✓ Pass 1 complete. Found {len(word_freqs)} unique words.")
 
     # 2. Initialize our vocabulary representation and initial pair frequencies
-    if verbose: print("Building initial vocabulary and pair frequencies...")
+    if verbose:
+        print("Building initial vocabulary and pair frequencies...")
     corpus, pair_freqs = get_initial_pair_freqs(word_freqs)
 
     # 3. Initialize vocabulary with base tokens and special tokens
-    vocab: Dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+    vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
     current_id = 256
     for st in special_tokens:
         vocab[current_id] = st.encode("utf-8")
         current_id += 1
 
-    merges: List[Tuple[bytes, bytes]] = []
+    merges: list[tuple[bytes, bytes]] = []
 
     # 4. Main BPE merge loop
     if verbose:
         print(f"Initial vocab size: {len(vocab)}, target: {vocab_size}")
         print("Starting Pass 2: BPE merges...")
-    
+
     num_merges = vocab_size - len(vocab)
     pbar = tqdm(total=num_merges, desc="2/2: BPE merges", disable=not verbose)
+
+    # history: список словників з інформацією про кожну ітерацію
+    history: list[dict] = []
 
     while len(vocab) < vocab_size and pair_freqs:
         # Find the best pair to merge
         try:
             best_pair, best_freq = max(pair_freqs.items(), key=lambda item: (item[1], item[0]))
         except ValueError:
-            break # No pairs left
+            break  # No pairs left
 
         if best_freq < min_frequency:
-            if verbose: print(f"Best pair frequency {best_freq} < {min_frequency}. Stopping.")
+            if verbose:
+                print(f"Best pair frequency {best_freq} < {min_frequency}. Stopping.")
             break
 
         # Add the new merged token to our vocabulary
         new_token = best_pair[0] + best_pair[1]
         vocab[current_id] = new_token
         merges.append(best_pair)
-        
-        # This is the new, efficient update step. We don't touch the original file.
-        # We update our in-memory 'corpus' (word frequencies) and pair counts.
+
+        # Update corpus and pair_freqs efficiently
         new_corpus = {}
         for word_tokens, freq in corpus.items():
             if len(word_tokens) < 2:
                 new_corpus[word_tokens] = freq
                 continue
 
-            # Find pairs in this word that will be affected by the merge
             merged_word_tokens = merge_pair(word_tokens, best_pair, new_token)
-            
+
             if merged_word_tokens != word_tokens:
-                # The word was changed, so we need to update pair frequencies
-                # Decrement counts for old pairs that were destroyed by the merge
                 for i in range(len(word_tokens) - 1):
-                    pair = (word_tokens[i], word_tokens[i+1])
-                    if pair_freqs.get(pair): pair_freqs[pair] -= freq
-                
-                # Increment counts for new pairs created by the merge
+                    pair = (word_tokens[i], word_tokens[i + 1])
+                    if pair_freqs.get(pair):
+                        pair_freqs[pair] -= freq
+
                 for i in range(len(merged_word_tokens) - 1):
-                    pair = (merged_word_tokens[i], merged_word_tokens[i+1])
+                    pair = (merged_word_tokens[i], merged_word_tokens[i + 1])
                     pair_freqs[pair] += freq
-            
+
             new_corpus[merged_word_tokens] = freq
 
         corpus = new_corpus
         current_id += 1
+
+        # Записуємо ітерацію в history (store base64-encoded bytes + readable text)
+        history.append({
+            "iter": len(history) + 1,
+            "pair": [_b64(best_pair[0]), _b64(best_pair[1])],
+            "pair_text": [_readable(best_pair[0]), _readable(best_pair[1])],
+            "freq": int(best_freq),
+            "new_token": _b64(new_token),
+            "new_token_text": _readable(new_token),
+            "vocab_size": len(vocab)
+        })
+
         pbar.update(1)
         pbar.set_postfix({'freq': best_freq, 'vocab': len(vocab)})
 
@@ -217,127 +264,54 @@ def run_train_bpe_stream(
         print(f"✓ Training complete: {len(vocab)} tokens, {len(merges)} merges")
 
     if save_path:
+        # Пікл як і раніше
         with open(save_path, 'wb') as f:
             pickle.dump({'vocab': vocab, 'merges': merges, 'special_tokens': special_tokens}, f)
+        # JSON sidecar з історією (human-readable-ish, base64 для байтів)
+        json_path = os.path.splitext(save_path)[0] + ".json"
+        serial = {
+            "history": history,
+            # merges як base64 + текстова форма
+            "merges": [
+                {
+                    "a": _b64(a),
+                    "b": _b64(b),
+                    "a_text": _readable(a),
+                    "b_text": _readable(b)
+                } for a, b in merges
+            ],
+            "special_tokens": special_tokens
+        }
+
+        with open(json_path, 'w', encoding='utf-8') as jf:
+            json.dump(serial, jf, ensure_ascii=False, indent=2)
         if verbose:
-            print(f"Saved to {save_path}")
+            print(f"Saved pickle to {save_path}")
+            print(f"Saved JSON history to {json_path}")
 
     return vocab, merges
 
-# --- UNCHANGED ENCODE/DECODE/LOAD FUNCTIONS ---
-def load_bpe(load_path: str) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]], List[str]]:
+
+def load_bpe(load_path: str) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]], list[str]]:
     """Load saved BPE model."""
     with open(load_path, 'rb') as f:
         data = pickle.load(f)
     return data['vocab'], data['merges'], data['special_tokens']
-
-def encode(text: str, merges: List[Tuple[bytes, bytes]], special_tokens: Optional[List[str]] = None) -> List[int]:
-    """
-    Encode text using trained BPE merges.
-    Returns list of token IDs.
-    """
-    if special_tokens is None:
-        special_tokens = []
-    
-    # Build merge priority dict
-    merge_priority = {pair: i for i, pair in enumerate(merges)}
-    
-    # Split on special tokens
-    if special_tokens:
-        pattern = "|".join(re.escape(st) for st in special_tokens)
-        parts = re.split(f"({pattern})", text)
-    else:
-        parts = [text]
-    
-    # Pre-tokenize
-    special_set = set(special_tokens)
-    pre_tokens = []
-    for part in parts:
-        if part in special_set:
-            pre_tokens.append(part)
-        elif part:
-            pre_tokens.extend(re.findall(PAT, part))
-    
-    # Apply merges to each pre-token
-    result = []
-    # Create a reverse vocab for merged tokens to find their IDs
-    merged_token_to_id = {}
-    base_id = 256 + len(special_tokens)
-    for i, (a,b) in enumerate(merges):
-        merged_token_to_id[a+b] = base_id + i
-
-    for pre_token in pre_tokens:
-        if pre_token in special_set:
-            result.append(256 + special_tokens.index(pre_token))
-            continue
-        
-        tokens = [bytes([b]) for b in pre_token.encode("utf-8")]
-        
-        while len(tokens) > 1:
-            best_pair_info = min(
-                ((i, merge_priority.get((tokens[i], tokens[i+1]), float('inf'))) for i in range(len(tokens) - 1)),
-                key=lambda x: x[1]
-            )
-            idx, priority = best_pair_info
-            if priority == float('inf'):
-                break
-            
-            pair = (tokens[idx], tokens[idx+1])
-            tokens = tokens[:idx] + [pair[0] + pair[1]] + tokens[idx+2:]
-        
-        for token in tokens:
-            if len(token) == 1:
-                result.append(token[0])
-            else:
-                result.append(merged_token_to_id[token])
-    
-    return result
-
-
-def decode(token_ids: List[int], vocab: Dict[int, bytes]) -> str:
-    """
-    Decode token IDs back to text using the vocabulary.
-    """
-    byte_sequences = [vocab.get(token_id, b'') for token_id in token_ids]
-    all_bytes = b''.join(byte_sequences)
-    return all_bytes.decode("utf-8", errors="replace")
-
 
 # Example usage
 if __name__ == "__main__":
     start_time = time.time()
     
     # Example with small vocab size for testing
-    # Create a dummy large file for demonstration if it doesn't exist
-    data_path = "/mnt/d/Stanford_LLM/assignment1-basics/data/owt_train.txt"
-    if not os.path.exists(data_path):
-        print(f"Creating a dummy data file '{data_path}' for demonstration...")
-        with open(data_path, "w", encoding="utf-8") as f:
-            for _ in range(50000):
-                f.write("This is a sample sentence for the BPE tokenizer. We repeat it many times to simulate a large dataset.\n")
-                f.write("The quick brown fox jumps over the lazy dog. Special tokens like <|endoftext|> should be handled correctly.\n")
-
-    # Use the new streaming function
-    vocab, merges = run_train_bpe_stream(
-        input_path=data_path, 
-        vocab_size=500, 
+    data = "/mnt/d/Stanford_LLM/assignment1-basics/data/owt_train.txt"
+    vocab, merges = run_train_bpe(
+        input_path=data, 
+        vocab_size=10000, 
         special_tokens=["<|endoftext|>"], 
         verbose=True,
         workers=None,  # Auto-detect
-        save_path="bpe_model_streamed.pkl"
+        save_path="cs336_basics/bpe_model_owt_train.pkl"
     )
     
     end_time = time.time()
-    print(f"\nTotal time: {end_time - start_time:.2f}s")     
-    
-    # --- Testing encode/decode ---
-    vocab, merges, special_tokens = load_bpe("bpe_model_streamed.pkl")
-
-    test_text = "One day, a little boy named Tim went to the park. He saw a big tiger. The tiger was not mean, but very easy to play with. Tim and the tiger played all day. They had lots of fun. Then, something unexpected happened."
-    token_ids = encode(test_text, merges, special_tokens=special_tokens)
-    print(f"\nEncoded '{test_text}' to {len(token_ids)} tokens")
-    print(f"Token IDs: {token_ids}")
-    
-    decoded_text = decode(token_ids, vocab)
-    print(f"Decoded text: {decoded_text}")
-    print(f"Texts match: {test_text == decoded_text}")
+    print(f"\nTotal time: {end_time - start_time:.2f}s")                                                                      

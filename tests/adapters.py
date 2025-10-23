@@ -132,7 +132,9 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    from cs336_basics.scaled_dot_product_attention import scaled_dot_product_attention
+    output, _ = scaled_dot_product_attention(Q, K, V, mask)
+    return output
 
 
 def run_multihead_self_attention(
@@ -166,7 +168,26 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    from cs336_basics.multihead_self_attention import MultiHeadSelfAttention
+    
+    # Create the module
+    mha = MultiHeadSelfAttention(d_model, num_heads)
+    
+    # The weights are already in batched format (d_model x d_in)
+    # containing all heads concatenated together
+    # Set the projection weights directly
+    with torch.no_grad():
+        mha.q_proj.weight.copy_(q_proj_weight)
+        mha.k_proj.weight.copy_(k_proj_weight)
+        mha.v_proj.weight.copy_(v_proj_weight)
+        mha.o_proj.weight.copy_(o_proj_weight)
+    
+    # Run forward pass
+    mha.eval()
+    with torch.no_grad():
+        output = mha(in_features)
+    
+    return output
 
 
 def run_multihead_self_attention_with_rope(
@@ -206,7 +227,23 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    from cs336_basics.multihead_self_attention_rope import MultiHeadSelfAttention
+    
+    mha = MultiHeadSelfAttention(d_model, num_heads, max_seq_len=max_seq_len, theta=theta)
+    
+    # Set the projection weights
+    with torch.no_grad():
+        mha.q_proj.weight.copy_(q_proj_weight)
+        mha.k_proj.weight.copy_(k_proj_weight)
+        mha.v_proj.weight.copy_(v_proj_weight)
+        mha.o_proj.weight.copy_(o_proj_weight)
+    
+    # Run forward pass with RoPE
+    mha.eval()
+    with torch.no_grad():
+        output = mha(in_features, token_positions=token_positions)
+    
+    return output
 
 
 def run_rope(
@@ -338,7 +375,56 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    from cs336_basics.transformer_block import TransformerBlock
+    
+    # Get device and dtype from input
+    device = in_features.device
+    dtype = in_features.dtype
+    
+    # Create TransformerBlock with RoPE enabled
+    block = TransformerBlock(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        max_seq_len=max_seq_len,
+        theta=theta
+    ).to(device=device, dtype=dtype)
+    
+    # Load the weights into the model
+    # Map from the reference implementation's keys to our implementation's keys
+    state_dict = {
+        # Multi-head attention weights
+        'attention.q_proj.weight': weights['attn.q_proj.weight'],
+        'attention.k_proj.weight': weights['attn.k_proj.weight'],
+        'attention.v_proj.weight': weights['attn.v_proj.weight'],
+        'attention.o_proj.weight': weights['attn.output_proj.weight'],
+        
+        # First RMSNorm
+        'norm1.weight': weights['ln1.weight'],
+        
+        # Feed-forward network weights
+        'feed_forward.w1.weight': weights['ffn.w1.weight'],
+        'feed_forward.w2.weight': weights['ffn.w2.weight'],
+        'feed_forward.w3.weight': weights['ffn.w3.weight'],
+        
+        # Second RMSNorm
+        'norm2.weight': weights['ln2.weight'],
+    }
+    
+    block.load_state_dict(state_dict, strict=False)
+    
+    # Set to evaluation mode
+    block.eval()
+    
+    # Create token positions for RoPE (sequential positions)
+    batch_size, seq_len, _ = in_features.shape
+    token_positions = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
+    
+    # Run the forward pass
+    with torch.no_grad():
+        output = block(in_features, token_positions=token_positions)
+    
+    return output
 
 
 def run_transformer_lm(
@@ -420,7 +506,71 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    from cs336_basics.transformer_lm import TransformerLM
+    
+    # Get device and dtype from input
+    device = in_indices.device
+    dtype = next(iter(weights.values())).dtype
+    
+    # Create TransformerLM with RoPE enabled
+    model = TransformerLM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        d_model=d_model,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        theta=rope_theta,
+        device=device,
+        dtype=dtype
+    )
+    
+    # Map from reference implementation's keys to our implementation's keys
+    state_dict = {}
+    
+    # Token embeddings
+    state_dict['token_embedding.weight'] = weights['token_embeddings.weight']
+    
+    # Process each layer
+    for layer_idx in range(num_layers):
+        layer_prefix = f'layers.{layer_idx}.'
+        our_prefix = f'layers.{layer_idx}.'
+        
+        # Multi-head attention weights
+        state_dict[f'{our_prefix}attention.q_proj.weight'] = weights[f'{layer_prefix}attn.q_proj.weight']
+        state_dict[f'{our_prefix}attention.k_proj.weight'] = weights[f'{layer_prefix}attn.k_proj.weight']
+        state_dict[f'{our_prefix}attention.v_proj.weight'] = weights[f'{layer_prefix}attn.v_proj.weight']
+        state_dict[f'{our_prefix}attention.o_proj.weight'] = weights[f'{layer_prefix}attn.output_proj.weight']
+        
+        # First RMSNorm
+        state_dict[f'{our_prefix}norm1.weight'] = weights[f'{layer_prefix}ln1.weight']
+        
+        # Feed-forward network weights
+        state_dict[f'{our_prefix}feed_forward.w1.weight'] = weights[f'{layer_prefix}ffn.w1.weight']
+        state_dict[f'{our_prefix}feed_forward.w2.weight'] = weights[f'{layer_prefix}ffn.w2.weight']
+        state_dict[f'{our_prefix}feed_forward.w3.weight'] = weights[f'{layer_prefix}ffn.w3.weight']
+        
+        # Second RMSNorm
+        state_dict[f'{our_prefix}norm2.weight'] = weights[f'{layer_prefix}ln2.weight']
+    
+    # Final layer norm
+    state_dict['norm.weight'] = weights['ln_final.weight']
+    
+    # Output projection (lm_head)
+    state_dict['output_proj.W'] = weights['lm_head.weight'].T  # Transpose because Liner uses W not W^T
+    
+    # Load the state dict
+    model.load_state_dict(state_dict, strict=False)
+    
+    # Set to evaluation mode
+    model.eval()
+    
+    # Run the forward pass
+    with torch.no_grad():
+        logits = model(in_indices)
+    
+    return logits
+    
 
 
 def run_rmsnorm(
@@ -501,7 +651,8 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    from cs336_basics.softmax import softmax
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(

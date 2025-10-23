@@ -70,39 +70,3 @@ class SwiGLU(nn.Module):
         output = self.w2(gated)
         
         return output
-
-"""
-if __name__ == "__main__":
-    # Test with common transformer dimensions
-    d_model = 512
-    batch_size = 32
-    seq_len = 128
-    
-    # Create SwiGLU FFN
-    ffn = SwiGLU(d_model)
-    
-    print(f"Model dimensions:")
-    print(f"  d_model: {ffn.d_model}")
-    print(f"  d_ff: {ffn.d_ff}")
-    print(f"  d_ff is multiple of 64: {ffn.d_ff % 64 == 0}")
-    print(f"  Ratio d_ff/d_model: {ffn.d_ff / ffn.d_model:.3f}")
-    
-    # Create sample input
-    x = torch.randn(batch_size, seq_len, d_model)
-    
-    # Forward pass
-    output = ffn(x)
-    
-    print(f"\nInput shape: {x.shape}")
-    print(f"Output shape: {output.shape}")
-    
-    # Verify dimensions match
-    assert output.shape == x.shape, "Output shape mismatch!"
-    print("\n✓ Shape verification passed!")
-    
-    # Test with different d_model values
-    print("\nTesting d_ff calculations for various d_model values:")
-    for d in [256, 512, 768, 1024, 2048, 4096]:
-        ffn_test = SwiGLU(d)
-        print(f"  d_model={d:4d} → d_ff={ffn_test.d_ff:4d} (multiple of 64: {ffn_test.d_ff % 64 == 0})")
-"""

@@ -40,7 +40,7 @@ class RotaryPositionalEmbedding(nn.Module):
         self.register_buffer('cos', cos)
         self.register_buffer('sin', sin)
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+    def forward_rope(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
         """
         Process an input tensor and apply rotary positional embedding.
         

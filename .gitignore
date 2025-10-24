@@ -166,3 +166,7 @@ data/
 
 #BPE Model
 *.pkl
+
+#Json and html file
+*.json
+*.html

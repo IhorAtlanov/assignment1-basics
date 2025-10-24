@@ -1,173 +1,262 @@
-from tqdm import tqdm
-from collections import Counter, deque
 import os
 import regex as re
+from collections import Counter
+from multiprocessing import Pool, cpu_count
+import time
+import pickle
+from tqdm import tqdm
 
+# Pattern for pre-tokenization
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
-class BPEtokenizer:
-  def __init__(self):
-    self.vocab = {}
-    self.inverse_vocab = {}
-    self.bpe_merges = {}
- 
-  def train_BPE(self, text, vocab_size, allowed_specials = {"<|endoftext|>"}):
-    unique_chars = [ chr(i) for i in range(256)]
-    
-    unique_chars.extend(char for char in sorted(set(text)) if char not in unique_chars)
+def _pretokenize_chunk(args):
+    """Helper for multiprocessing.Pool.map (must be top-level)."""
+    chunk, special_tokens_set = args
+    out_tokens = []
+    for part in chunk:
+        if part in special_tokens_set:
+            out_tokens.append(part)
+        elif part:
+            tokens = re.findall(PAT, part)
+            out_tokens.extend(tokens)
+    return out_tokens
 
-    self.vocab = {i:char for i,char in enumerate(unique_chars)}
-    self.inverse_vocab = {char : i for i, char in self.vocab.items()}
-    
-    if allowed_specials:
-      for token in allowed_specials:
-        if token not in self.inverse_vocab:
-          new_id = len(self.vocab)
-          self.inverse_vocab[token] = new_id
-          self.vocab[new_id] = token
-    
-    token_ids = []
-    for char in text:
-      token = self.inverse_vocab[char]
-      token_ids.append(token)
-        
-    #================BPE Algorithm================
-    for new_id in tqdm(range(len(self.vocab), vocab_size), desc="Training BPE"):
-        pair_id = self.find_freq_pair(token_ids)
-        
-        if pair_id is None: #No more pair to merge; Stop the training
-            break
-        token_ids = self.replace_pairs(token_ids, pair_id, new_id)
-        self.bpe_merges[pair_id] = new_id
-    
-    #================Update the vocabulary with the new merged_tokens================
-    for (p0, p1), new_id in self.bpe_merges.items():
-        merged_token = self.vocab[p0] + self.vocab[p1]
-        self.vocab[new_id] = merged_token
-        self.inverse_vocab[merged_token] = new_id
-    
-    return
-  
-  @staticmethod
-  def find_freq_pair(token_ids):
-      pairs = Counter(zip(token_ids, token_ids[1:]))
-      
-      if not pairs:
-          return None
 
-      return max(pairs.items(), key = lambda x : x[1])[0]
-  
-  @staticmethod
-  def replace_pairs(token_ids, pair_id, new_id):
-      dq = deque(token_ids)
-      replaced = []
+def parallel_pretokenize(parts: list[str], special_tokens: list[str], workers: int | None = None) -> list[str]:
+    """
+    Pre-tokenize a list of 'parts' in parallel.
+    Special tokens are preserved (not tokenized).
+    """
+    if workers is None:
+        workers = max(1, cpu_count() - 1)
 
-      while dq:
-          current = dq.popleft()
-          if dq and (current, dq[0]) == pair_id:
-              replaced.append(new_id)
-              # Remove the 2nd token of the pair, 1st was already removed
-              dq.popleft()
-          else:
-              replaced.append(current)
+    if len(parts) == 0:
+        return []
 
-      return replaced
-  
-  def encode(self, text:str):
-        """ 
-            This function will generate token_ids based on the BPE merge rules and the vocabularies it learned during the training   
-        """
-        tokens = []
-        
-        #Split the text into tokens, Keeping the newline intact
-        words = text.replace("\n", " \n ").split()  #Make sure that the new_line seperator "\n" is treated as a separate token
-        
-        for i, word in enumerate(words):
-          tokens.append(word)
-                
-        token_ids = []
-        for token in tokens:
-            #Check if the token is already present in the vocabulary or not
-            if token in self.inverse_vocab:
-                token_id = self.inverse_vocab[token]
-                token_ids.append(token_id)
+    # Sequential processing for small inputs
+    if workers <= 1 or len(parts) < workers * 2:
+        result = []
+        sset = set(special_tokens)
+        for part in parts:
+            if part in sset:
+                result.append(part)
+            elif part:
+                result.extend(re.findall(PAT, part))
+        return result
+
+    # Create chunks
+    chunk_size = max(1, (len(parts) + workers - 1) // workers)
+    chunks = [parts[i:i + chunk_size] for i in range(0, len(parts), chunk_size)]
+
+    args_list = [(chunk, set(special_tokens)) for chunk in chunks]
+
+    with Pool(processes=min(workers, len(chunks))) as pool:
+        results = pool.map(_pretokenize_chunk, args_list)
+
+    # Flatten results
+    return [token for result in results for token in result]
+
+
+def get_word_freqs(input_path: str, special_tokens: list[str], workers: int | None, chunk_size_mb: int = 30) -> Counter:
+    """
+    Reads a large file in chunks, pre-tokenizes, and returns word frequency counts.
+    This is the first pass over the data.
+    """
+    special_tokens_set = set(special_tokens)
+    word_freqs = Counter()
+    
+    file_size = os.path.getsize(input_path)
+    
+    with open(input_path, encoding="utf-8") as f, tqdm(total=file_size, unit='B', unit_scale=True, desc="1/2: Counting word frequencies") as pbar:
+        while True:
+            chunk = f.readlines(chunk_size_mb * 1024 * 1024)
+            if not chunk:
+                break
+            
+            chunk_text = "".join(chunk)
+            
+            # Split on special tokens
+            if special_tokens:
+                pattern = "|".join(re.escape(st) for st in special_tokens)
+                parts = re.split(f"({pattern})", chunk_text)
             else:
-                #Do subword_tokenization using BPE
-                sub_token_ids = self.tokenize_with_bpe(token)
-                token_ids.extend(sub_token_ids)
-                
-        return token_ids
+                parts = [chunk_text]
+            
+            # Pre-tokenize the chunk
+            pre_tokens = parallel_pretokenize(parts, special_tokens, workers=workers)
+            
+            # Update word frequencies
+            word_freqs.update(pre_tokens)
+            
+            pbar.update(len(chunk_text.encode('utf-8')))
+            
+    # Remove special tokens from word_freqs as they are handled separately
+    for st in special_tokens_set:
+        if st in word_freqs:
+            del word_freqs[st]
+            
+    return word_freqs
 
-  #=======================This function is used to tokenize a sinlge token using BPE merge rules=======================                   
-  def tokenize_with_bpe(self, token):
-      
-      #Tokenize the tokens into individual characters(it can be interpreted as initial token_Ids)
-      token_ids = [self.inverse_vocab.get(char, None) for char in token]
-      if None in token_ids:
-          missing_chars = [char for char, tid in zip(token, token_ids) if tid is None]
-          raise ValueError(f"Characters not found in vocabulary: {missing_chars}")
-      
-      can_merge = True
-      while can_merge and len(token_ids) > 1:
-          can_merge = False
-          new_tokens = []
-          i = 0
-          while i < len(token_ids) - 1:
-              pair = (token_ids[i] , token_ids[i+1])
-              if pair in self.bpe_merges:
-                  merged_token_id = self.bpe_merges[pair]
-                  new_tokens.append(merged_token_id)
-                  
-                  i += 2 #Skip the next token as it is already merged
-                  can_merge = True
-              else:
-                  new_tokens.append(token_ids[i])
-                  i+=1
-          if i < len(token_ids):
-              new_tokens.append(token_ids[i])
-          token_ids = new_tokens
-              
-      return token_ids
-                  
-      
-  #======================This function is used to decode a list of token_ids back to text======================
-  def decode(self, token_ids):
-      decoded_string = ""
-      for token_id in token_ids:
-          if token_id not in self.vocab:
-              raise ValueError(f"Token Id {token_id} not found in Vocabulary")
-          token = self.vocab[token_id]
-          if token.startswith("_"):
-              #Replace the "_" with space
-              decoded_string += " " + token[1:]
-          else:
-              decoded_string += token
-          
-      return decoded_string 
-                
+def get_initial_pair_freqs(word_freqs: Counter) -> tuple[dict[tuple[bytes, ...], int], Counter]:
+    """
+    Calculates initial pair frequencies from word frequency counts.
+    The 'corpus' is now a dictionary mapping tokenized words to their frequency.
+    """
+    corpus = {}
+    pair_freqs = Counter()
+    
+    for word, freq in word_freqs.items():
+        tokens = tuple(bytes([b]) for b in word.encode("utf-8"))
+        corpus[tokens] = freq
         
-def main():
-  tokenizer = BPEtokenizer()
+        for i in range(len(tokens) - 1):
+            pair_freqs[(tokens[i], tokens[i+1])] += freq
+            
+    return corpus, pair_freqs
+
+def merge_pair(tokens: tuple[bytes, ...], pair: tuple[bytes, bytes], new_token: bytes) -> tuple[bytes, ...]:
+    """
+    Helper to merge a pair within a single tokenized word (represented as a tuple).
+    """
+    new_tokens = []
+    i = 0
+    while i < len(tokens):
+        if i < len(tokens) - 1 and tokens[i] == pair[0] and tokens[i+1] == pair[1]:
+            new_tokens.append(new_token)
+            i += 2
+        else:
+            new_tokens.append(tokens[i])
+            i += 1
+    return tuple(new_tokens)
+
+
+def run_train_bpe(
+    input_path: str,
+    vocab_size: int,
+    special_tokens: list[str] | None = None,
+    min_frequency: int = 2,
+    verbose: bool = False,
+    workers: int | None = None,
+    save_path: str | None = None,
+    chunk_size_mb: int = 50
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    """
+    Train BPE tokenizer efficiently on large files by streaming.
+    """
+    if special_tokens is None: 
+        special_tokens = []
     
-  #test_text = "low low low low low lower lower widest widest widest newest newest newest newest newest newest"
-  file_path = r"C:\Users\Ihor\Desktop\Stanford_LLM\assignment1-basics\data\TinyStoriesV2-GPT4-valid.txt"
-  with open(file_path, encoding="utf-8") as file:
-    data = file.read()
-    print(f"Length of the text: {len(data)}")
-  re.findall(PAT, data)
+    # 1. First pass: Get word frequencies by reading file in chunks
+    if verbose: 
+        print("Starting Pass 1: Reading file and counting word frequencies...")
+    word_freqs = get_word_freqs(input_path, special_tokens, workers, chunk_size_mb)
+    if verbose: 
+        print(f"✓ Pass 1 complete. Found {len(word_freqs)} unique words.")
+
+    # 2. Initialize our vocabulary representation and initial pair frequencies
+    if verbose: 
+        print("Building initial vocabulary and pair frequencies...")
+    corpus, pair_freqs = get_initial_pair_freqs(word_freqs)
+
+    # 3. Initialize vocabulary with base tokens and special tokens
+    vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+    current_id = 256
+    for st in special_tokens:
+        vocab[current_id] = st.encode("utf-8")
+        current_id += 1
+
+    merges: list[tuple[bytes, bytes]] = []
+
+    # 4. Main BPE merge loop
+    if verbose:
+        print(f"Initial vocab size: {len(vocab)}, target: {vocab_size}")
+        print("Starting Pass 2: BPE merges...")
     
-  tokenizer.train_BPE(text=data, vocab_size=1000, allowed_specials={"<|endoftext|>"})
-  
-  random_text = "Jack embraced beauty through art and life"
-  token_ids = tokenizer.encode(random_text)
-  print(token_ids)
-  print(tokenizer.decode(token_ids))
-  
-  print(f"Number of characters in random_text: {len(random_text)}")
-  print(f"Number of token Ids:- {len(token_ids)}")
-  
-  for token_id in token_ids:
-    print(f"{token_id}-->{tokenizer.decode([token_id])}")
-  
+    num_merges = vocab_size - len(vocab)
+    pbar = tqdm(total=num_merges, desc="2/2: BPE merges", disable=not verbose)
+
+    while len(vocab) < vocab_size and pair_freqs:
+        # Find the best pair to merge
+        try:
+            best_pair, best_freq = max(pair_freqs.items(), key=lambda item: (item[1], item[0]))
+        except ValueError:
+            break # No pairs left
+
+        if best_freq < min_frequency:
+            if verbose: 
+                print(f"Best pair frequency {best_freq} < {min_frequency}. Stopping.")
+            break
+
+        # Add the new merged token to our vocabulary
+        new_token = best_pair[0] + best_pair[1]
+        vocab[current_id] = new_token
+        merges.append(best_pair)
+        
+        # This is the new, efficient update step. We don't touch the original file.
+        # We update our in-memory 'corpus' (word frequencies) and pair counts.
+        new_corpus = {}
+        for word_tokens, freq in corpus.items():
+            if len(word_tokens) < 2:
+                new_corpus[word_tokens] = freq
+                continue
+
+            # Find pairs in this word that will be affected by the merge
+            merged_word_tokens = merge_pair(word_tokens, best_pair, new_token)
+            
+            if merged_word_tokens != word_tokens:
+                # The word was changed, so we need to update pair frequencies
+                # Decrement counts for old pairs that were destroyed by the merge
+                for i in range(len(word_tokens) - 1):
+                    pair = (word_tokens[i], word_tokens[i+1])
+                    if pair_freqs.get(pair): 
+                        pair_freqs[pair] -= freq
+                
+                # Increment counts for new pairs created by the merge
+                for i in range(len(merged_word_tokens) - 1):
+                    pair = (merged_word_tokens[i], merged_word_tokens[i+1])
+                    pair_freqs[pair] += freq
+            
+            new_corpus[merged_word_tokens] = freq
+
+        corpus = new_corpus
+        current_id += 1
+        pbar.update(1)
+        pbar.set_postfix({'freq': best_freq, 'vocab': len(vocab)})
+
+    pbar.close()
+
+    if verbose:
+        print(f"✓ Training complete: {len(vocab)} tokens, {len(merges)} merges")
+
+    if save_path:
+        with open(save_path, 'wb') as f:
+            pickle.dump({'vocab': vocab, 'merges': merges, 'special_tokens': special_tokens}, f)
+        if verbose:
+            print(f"Saved to {save_path}")
+
+    return vocab, merges
+
+
+def load_bpe(load_path: str) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]], list[str]]:
+    """Load saved BPE model."""
+    with open(load_path, 'rb') as f:
+        data = pickle.load(f)
+    return data['vocab'], data['merges'], data['special_tokens']
+
+# Example usage
 if __name__ == "__main__":
-  main()
+    start_time = time.time()
+    
+    # Example with small vocab size for testing
+    data = "/mnt/d/Stanford_LLM/assignment1-basics/data/owt_train.txt"
+    vocab, merges = run_train_bpe(
+        input_path=data, 
+        vocab_size=10000, 
+        special_tokens=["<|endoftext|>"], 
+        verbose=True,
+        workers=None,  # Auto-detect
+        save_path="bpe_model_owt_train.pkl"
+    )
+    
+    end_time = time.time()
+    print(f"\nTotal time: {end_time - start_time:.2f}s")                                                                      

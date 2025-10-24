@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from cs336_basics.multihead_self_attention_rope import MultiHeadSelfAttention
-from cs336_basics.positionwise_feedforward import SwiGLU
-from cs336_basics.rmsnorm import RMSNorm
+from cs336_basics.TransformerLM.multihead_self_attention_rope import MultiHeadSelfAttention
+from cs336_basics.TransformerLM.positionwise_feedforward import SwiGLU
+from cs336_basics.TransformerLM.rmsnorm import RMSNorm
 
 
 class TransformerBlock(nn.Module):

@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
-from cs336_basics.embedding import Embedding
-from cs336_basics.transformer_block import TransformerBlock
-from cs336_basics.rmsnorm import RMSNorm
-from cs336_basics.liner import Liner
+from cs336_basics.TransformerLM.embedding import Embedding
+from cs336_basics.TransformerLM.transformer_block import TransformerBlock
+from cs336_basics.TransformerLM.rmsnorm import RMSNorm
+from cs336_basics.TransformerLM.liner import Liner
 
 
 class TransformerLM(nn.Module):

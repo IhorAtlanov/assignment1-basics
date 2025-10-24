@@ -1,6 +1,6 @@
 import torch
 import math
-from cs336_basics.softmax import softmax
+from cs336_basics.TransformerLM.softmax import softmax
 
 
 def scaled_dot_product_attention(query, key, value, mask=None):

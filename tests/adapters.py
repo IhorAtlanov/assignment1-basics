@@ -28,7 +28,7 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-    from cs336_basics.liner import Liner
+    from cs336_basics.TransformerLM.liner import Liner
     model = Liner(d_in, d_out, device=weights.device, dtype=weights.dtype)
     
     # Load weights - need to transpose since weights are (d_out, d_in) 
@@ -58,7 +58,7 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    from cs336_basics.embedding import Embedding
+    from cs336_basics.TransformerLM.embedding import Embedding
     
     # Create an embedding layer with the specified dimensions
     embedding = Embedding(
@@ -132,7 +132,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    from cs336_basics.scaled_dot_product_attention import scaled_dot_product_attention
+    from cs336_basics.TransformerLM.scaled_dot_product_attention import scaled_dot_product_attention
     output, _ = scaled_dot_product_attention(Q, K, V, mask)
     return output
 
@@ -168,7 +168,7 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    from cs336_basics.multihead_self_attention import MultiHeadSelfAttention
+    from cs336_basics.TransformerLM.multihead_self_attention import MultiHeadSelfAttention
     
     # Create the module
     mha = MultiHeadSelfAttention(d_model, num_heads)
@@ -227,7 +227,7 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    from cs336_basics.multihead_self_attention_rope import MultiHeadSelfAttention
+    from cs336_basics.TransformerLM.multihead_self_attention_rope import MultiHeadSelfAttention
     
     mha = MultiHeadSelfAttention(d_model, num_heads, max_seq_len=max_seq_len, theta=theta)
     
@@ -375,7 +375,7 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    from cs336_basics.transformer_block import TransformerBlock
+    from cs336_basics.TransformerLM.transformer_block import TransformerBlock
     
     # Get device and dtype from input
     device = in_features.device
@@ -506,7 +506,7 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    from cs336_basics.transformer_lm import TransformerLM
+    from cs336_basics.TransformerLM.transformer_lm import TransformerLM
     
     # Get device and dtype from input
     device = in_indices.device
@@ -651,7 +651,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    from cs336_basics.softmax import softmax
+    from cs336_basics.TransformerLM.softmax import softmax
     return softmax(in_features, dim)
 
 
@@ -780,7 +780,7 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    from cs336_basics.Tokenizer import Tokenizer
+    from cs336_basics.BPE.Tokenizer import Tokenizer
     return Tokenizer(vocab, merges, special_tokens)
 
 

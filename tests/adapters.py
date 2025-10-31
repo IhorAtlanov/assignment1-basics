@@ -635,7 +635,25 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    import numpy as np
+    # We need context_length + 1 tokens to get both inputs and targets
+    max_start_idx = len(dataset) - context_length - 1
+    
+    if max_start_idx < 0:
+        raise ValueError(f"Dataset too small: needs at least {context_length + 1} tokens")
+    
+    # Sample random starting indices for each sequence in the batch
+    start_indices = np.random.randint(0, max_start_idx + 1, size=batch_size)
+    
+    # Collect sequences
+    inputs = np.array([dataset[i:i + context_length] for i in start_indices])
+    targets = np.array([dataset[i + 1:i + context_length + 1] for i in start_indices])
+    
+    # Convert to PyTorch tensors and move to device
+    inputs = torch.from_numpy(inputs.astype(np.int64)).to(device)
+    targets = torch.from_numpy(targets.astype(np.int64)).to(device)
+    
+    return inputs, targets
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -670,7 +688,29 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    # Step 1: Subtract max for numerical stability
+    # Subtract the maximum logit value for each example (along vocab dimension)
+    max_logits = torch.max(inputs, dim=1, keepdim=True)[0]  # Shape: (batch_size, 1)
+    inputs_stable = inputs - max_logits  # Shape: (batch_size, vocab_size)
+    
+    # Step 2: Compute log(sum(exp(inputs_stable))) for each example
+    # This is log_sum_exp along the vocabulary dimension
+    log_sum_exp = torch.log(torch.sum(torch.exp(inputs_stable), dim=1))  # Shape: (batch_size,)
+    
+    # Step 3: Extract the logit values at the target indices
+    # For each example i, we want inputs_stable[i, targets[i]]
+    batch_size = inputs.shape[0]
+    target_logits = inputs_stable[torch.arange(batch_size, device=inputs.device), targets]  # Shape: (batch_size,)
+    
+    # Step 4: Compute cross entropy for each example
+    # ℓ_i = -log(softmax(inputs)[target])
+    #     = -log(exp(inputs_stable[target]) / sum(exp(inputs_stable)))
+    #     = -(inputs_stable[target] - log_sum_exp)
+    #     = log_sum_exp - inputs_stable[target]
+    cross_entropy_per_example = log_sum_exp - target_logits  # Shape: (batch_size,)
+    
+    # Step 5: Return the average across the batch
+    return cross_entropy_per_example.mean()  # Shape: scalar
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
@@ -682,14 +722,16 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    from cs336_basics.Cross_entropy_loss_AdamW.gradient_clipping import clip_grad_l2_
+    return clip_grad_l2_(parameters, max_l2_norm)
 
 
 def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    from cs336_basics.Cross_entropy_loss_AdamW.adamw import AdamW
+    return AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -717,7 +759,8 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    from cs336_basics.Cross_entropy_loss_AdamW.learning_rate_schedule import run_get_lr_cosine_schedule
+    return run_get_lr_cosine_schedule(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
 def run_save_checkpoint(
@@ -736,7 +779,12 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'iteration': iteration
+    }
+    torch.save(checkpoint, out)
 
 
 def run_load_checkpoint(
@@ -757,7 +805,10 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    checkpoint = torch.load(src)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    return checkpoint['iteration']
 
 
 def get_tokenizer(

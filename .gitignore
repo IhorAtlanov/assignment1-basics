@@ -170,3 +170,10 @@ data/
 #Json and html file
 *.json
 *.html
+
+*.npy
+
+checkpoints_test1/
+checkpoints1/
+checkpoints2/
+checkpoints3/

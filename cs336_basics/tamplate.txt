@@ -1,0 +1,2 @@
+uv run train.py --train-data-path /mnt/d/Stanford_LLM/assignment1-basics/cs336_basics/train.npy --val-data-path /mnt/d/Stanford_LLM/assignment1-basics/cs336_basics/val.npy --vocab-size 10000 --d-model 512 --num-layers 6 --num-heads 8 --batch-size 32 --max-iters 10000 --checkpoint-dir ./checkpoints
+uv run inference_example.py --checkpoint /mnt/d/Stanford_LLM/assignment1-basics/cs336_basics/checkpoints/best_model.pt --tokenizer /mnt/d/Stanford_LLM/assignment1-basics/cs336_basics/BPE/bpe_model_TinyStoriesV2-GPT4-train.pkl --prompt "Tell me a story about a robot"

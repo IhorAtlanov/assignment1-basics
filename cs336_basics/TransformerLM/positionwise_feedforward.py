@@ -25,7 +25,7 @@ class SwiGLU(nn.Module):
         bias: Whether to use bias in linear layers (default: False)
     """
     
-    def __init__(self, d_model: int, d_ff: int = None, bias: bool = False):
+    def __init__(self, d_model: int, d_ff: int = None, bias: bool = False, device=None, dtype=None):
         super().__init__()
         
         # Calculate d_ff as approximately (8/3) * d_model
@@ -42,9 +42,9 @@ class SwiGLU(nn.Module):
         # W1: for SiLU activation path
         # W3: for gating path
         # W2: output projection
-        self.w1 = nn.Linear(d_model, d_ff, bias=bias)
-        self.w3 = nn.Linear(d_model, d_ff, bias=bias)
-        self.w2 = nn.Linear(d_ff, d_model, bias=bias)
+        self.w1 = nn.Linear(d_model, d_ff, bias=bias, device=device, dtype=dtype)
+        self.w2 = nn.Linear(d_ff, d_model, bias=bias, device=device, dtype=dtype)
+        self.w3 = nn.Linear(d_model, d_ff, bias=bias, device=device, dtype=dtype)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -58,7 +58,8 @@ class SwiGLU(nn.Module):
         """
         # SiLU activation path: x * sigmoid(x)
         # Using torch.sigmoid for numerical stability as specified
-        swish = self.w1(x) * torch.sigmoid(self.w1(x))
+        w1_out = self.w1(x)
+        swish = w1_out * torch.sigmoid(w1_out)  # SiLU = x * sigmoid(x)
         
         # Gating path
         gate = self.w3(x)

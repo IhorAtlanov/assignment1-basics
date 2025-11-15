@@ -15,13 +15,23 @@ class MultiHeadSelfAttention(nn.Module):
     Optionally supports RoPE (Rotary Position Embeddings).
     """
     
-    def __init__(self, d_model: int, num_heads: int, max_seq_len: int = None, theta: float = None):
+    def __init__(
+        self, 
+        d_model: int, 
+        num_heads: int, 
+        max_seq_len: int = None, 
+        theta: float = None,
+        device=None,
+        dtype=None
+    ):
         """
         Args:
             d_model: Dimensionality of the Transformer block inputs/outputs
             num_heads: Number of attention heads
             max_seq_len: Maximum sequence length (for RoPE precomputation)
             theta: RoPE base parameter (if None, RoPE is disabled)
+            device: Device to place parameters on
+            dtype: Data type for parameters
         """
         super().__init__()
         
@@ -29,16 +39,16 @@ class MultiHeadSelfAttention(nn.Module):
         
         self.d_model = d_model
         self.num_heads = num_heads
-        self.d_k = d_model // num_heads  # Dimension per head
-        self.d_v = d_model // num_heads  # Same as d_k per the paper
+        self.d_k = d_model // num_heads # Dimension per head
+        self.d_v = d_model // num_heads # Same as d_k per the paper
         
         # Combined projections for all heads (more efficient than separate projections)
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.q_proj = nn.Linear(d_model, d_model, bias=False, device=device, dtype=dtype)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False, device=device, dtype=dtype)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False, device=device, dtype=dtype)
         
         # Output projection
-        self.o_proj = nn.Linear(d_model, d_model, bias=False)
+        self.o_proj = nn.Linear(d_model, d_model, bias=False, device=device, dtype=dtype)
         
         # Scaling factor for scaled dot-product attention
         self.scale = math.sqrt(self.d_k)
@@ -48,14 +58,13 @@ class MultiHeadSelfAttention(nn.Module):
         if self.use_rope:
             self.theta = theta
             self.max_seq_len = max_seq_len
-            # Precompute RoPE frequencies
-            self._precompute_rope_freqs()
+            self._precompute_rope_freqs(device=device)  # ← Передаємо device
     
-    def _precompute_rope_freqs(self):
+    def _precompute_rope_freqs(self, device=None):
         """Precompute RoPE rotation frequencies."""
         # Compute frequencies for each dimension pair
         # freq_i = 1 / (theta ^ (2i / d_k)) for i in [0, d_k/2)
-        dim_indices = torch.arange(0, self.d_k, 2, dtype=torch.float32)
+        dim_indices = torch.arange(0, self.d_k, 2, dtype=torch.float32, device=device)
         freqs = 1.0 / (self.theta ** (dim_indices / self.d_k))
         
         # Register as buffer so it moves with the model

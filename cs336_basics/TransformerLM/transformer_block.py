@@ -27,7 +27,9 @@ class TransformerBlock(nn.Module):
         eps: float = 1e-5,
         bias: bool = False,
         max_seq_len: int = None,
-        theta: float = None
+        theta: float = None,
+        device=None,
+        dtype=None
     ):
         """
         Initialize the Transformer block.
@@ -40,21 +42,31 @@ class TransformerBlock(nn.Module):
             bias: Whether to use bias in feed-forward layers (default: False)
             max_seq_len: Maximum sequence length (for RoPE, if used)
             theta: RoPE base parameter (if None, RoPE is disabled)
+            device: Device to place parameters on
+            dtype: Data type for parameters
         """
         super().__init__()
         
         # First sublayer: Multi-head self-attention
-        self.norm1 = RMSNorm(d_model, eps=eps)
+        self.norm1 = RMSNorm(d_model, eps=eps, device=device, dtype=dtype)
         self.attention = MultiHeadSelfAttention(
             d_model=d_model,
             num_heads=num_heads,
             max_seq_len=max_seq_len,
-            theta=theta
+            theta=theta,
+            device=device,
+            dtype=dtype
         )
         
         # Second sublayer: Position-wise feed-forward network
-        self.norm2 = RMSNorm(d_model, eps=eps)
-        self.feed_forward = SwiGLU(d_model=d_model, d_ff=d_ff, bias=bias)
+        self.norm2 = RMSNorm(d_model, eps=eps, device=device, dtype=dtype)
+        self.feed_forward = SwiGLU(
+            d_model=d_model, 
+            d_ff=d_ff, 
+            bias=bias,
+            device=device,
+            dtype=dtype
+        )
     
     def forward(
         self,
@@ -74,7 +86,7 @@ class TransformerBlock(nn.Module):
         # First sublayer: Multi-head self-attention with residual
         # y = x + MultiHeadSelfAttention(RMSNorm(x))
         x = x + self.attention(self.norm1(x), token_positions=token_positions)
-        
+            
         # Second sublayer: Feed-forward network with residual
         # y = x + FeedForward(RMSNorm(x))
         x = x + self.feed_forward(self.norm2(x))
